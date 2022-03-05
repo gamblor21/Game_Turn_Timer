@@ -1,15 +1,28 @@
+# SPDX-FileCopyrightText: 2022 Mark Komus
+# SPDX-License-Identifier: MIT
+
 import asyncio
-
 import board
-
+import neopixel
+import keypad
+import supervisor
+import time
 from adafruit_ht16k33.segments import BigSeg7x4, Seg14x4
 from digitalio import DigitalInOut, Direction, Pull
-import neopixel
 
-import keypad
-import time
+RED = (255,0,0)
+GREEN = (0,255,0)
+BLUE = (0,0,255)
+YELLOW = (255,255,0)
+PURPLE = (255,0,255)
+ORANGE = (255,70,0)
+WHITE = (255,255,255)
+PINK = (255,90,90)
+CYAN = (0,255,255)
+GREY = (50,50,50)
+BLACK = (0,0,0)
 
-PLAYER_COLORS = ( (255,0,0), (0,255,0), (0,0,255), (255,0,255), (255,255,0), (0,255,255), (255,255,255) )
+PLAYER_COLORS = ( RED, GREEN, BLUE, YELLOW, PURPLE, ORANGE, PINK, CYAN, GREY, WHITE, BLACK )
 
 # Initialize components
 i2c = board.I2C()
@@ -33,7 +46,6 @@ small_button_pin = board.D11
 pixels = neopixel.NeoPixel(board.D5, 8, brightness=0.1, auto_write=False, pixel_order=(1,0,2,3))
 pixels.fill(0x000000)
 pixels.show()
-
 
 def show_player(player, marquee):
     pixels.fill(player.color)
@@ -71,6 +83,7 @@ class Game:
         self.players = []
         self._current_player = 0
         self.paused = True
+        self.game_over = False
 
     @property
     def current_player(self):
@@ -142,14 +155,12 @@ async def setup_phase(game, marquee, small_button_pin, large_button_pin):
                 if key_number == 0:
                     small_button_light.value = False
                     if setup_phase is "PLAYERS":
-                        print("Done players")
                         setup_phase = "COLORS"
-                        #game = Game()
                         pixels.fill(PLAYER_COLORS[current_color])
                         pixels.show()
                         marquee.message("PLAYER {} COLOR   ".format(color_phase_player), 0.3, True)
+                        large_segment.print("   {}".format(color_phase_player))
                     elif setup_phase is "COLORS":
-                        print("Color chosen")
                         player = Player(color_phase_player, PLAYER_COLORS[current_color])
                         game.players.append(player)
                         color_phase_player += 1
@@ -161,54 +172,22 @@ async def setup_phase(game, marquee, small_button_pin, large_button_pin):
                             pixels.fill(PLAYER_COLORS[current_color])
                             pixels.show()
                             marquee.message("PLAYER {} COLOR   ".format(color_phase_player), 0.3, True)
+                            large_segment.print("   {}".format(color_phase_player))
 
                 if key_number == 1:
                     large_button_light.value = True
                     if setup_phase is "PLAYERS":
-                        print("More players")
                         number_players += 1
                         if number_players == 10:
                             number_players = 1
                         large_segment.print("   {}".format(number_players))
                     elif setup_phase is "COLORS":
-                        print("Change color")
                         current_color += 1
                         if current_color == len(PLAYER_COLORS):
                             current_color = 0
                         pixels.fill(PLAYER_COLORS[current_color])
                         pixels.show()
 
-            if key_event and key_event.released:
-                key_number = key_event.key_number
-                if key_number == 0:
-                    small_button_light.value = True
-                if key_number == 1:
-                    large_button_light.value = False
-
-            await asyncio.sleep(0)
-
-async def monitor_buttons(marquee, small_button_pin, large_button_pin):
-    large_button_light.value = False
-    with keypad.Keys((small_button_pin, large_button_pin), value_when_pressed=False, pull=True) as keys:
-        while True:
-            key_event = keys.events.get()
-            if key_event and key_event.pressed:
-                key_number = key_event.key_number
-                if key_number == 0:
-                    small_button_light.value = False
-                    if game.paused is True:
-                        game.resume()
-                        show_player(game.current_player, marquee)
-                    else:
-                        game.pause()
-                        marquee.message("PAUSED   ", 0.3, True)
-                if key_number == 1:
-                    if game.paused is False:
-                        large_button_light.value = True
-                        game.current_player.timer.pause()
-                        game.next_player()
-                        show_player(game.current_player, marquee)
-                        game.current_player.timer.resume()
             if key_event and key_event.released:
                 key_number = key_event.key_number
                 if key_number == 0:
@@ -235,6 +214,50 @@ async def show_timer():
 
         await asyncio.sleep(0.05)
 
+async def monitor_buttons(marquee, small_button_pin, large_button_pin):
+    large_button_light.value = False
+    small_button_press_time = 0
+    with keypad.Keys((small_button_pin, large_button_pin), value_when_pressed=False, pull=True) as keys:
+        while True:
+            key_event = keys.events.get()
+            if key_event and key_event.pressed:
+                key_number = key_event.key_number
+                if key_number == 0: # small button
+                    small_button_press_time = key_event.timestamp
+                    small_button_light.value = False
+                    if game.game_over is False:
+                        if game.paused is True:
+                            game.resume()
+                            show_player(game.current_player, marquee)
+                        else:
+                            game.pause()
+                            marquee.message("PAUSED   ", 0.3, True)
+                if key_number == 1:
+                    large_button_light.value = True
+                    if game.game_over is True:
+                        game.next_player()
+                        show_player(game.current_player, marquee)
+                    if game.paused is False:
+                        game.current_player.timer.pause()
+                        game.next_player()
+                        show_player(game.current_player, marquee)
+                        game.current_player.timer.resume()
+            if key_event and key_event.released:
+                key_number = key_event.key_number
+                if key_number == 0:
+                    small_button_light.value = True
+                    if (key_event.timestamp-small_button_press_time) > 5000: # 5 seconds
+                        if game.game_over is False:
+                            game.game_over = True
+                            game.pause()
+                            marquee.message("GAME OVER   ", 0.3, True)
+                        else:
+                            supervisor.reload()
+                if key_number == 1:
+                    large_button_light.value = False
+
+            await asyncio.sleep(0)
+
 async def main():
     marquee = MarqueeMessage(None, 1.0)
     marquee_task = asyncio.create_task(marquee_routine(marquee))
@@ -242,7 +265,8 @@ async def main():
     setup_task = asyncio.create_task(setup_phase(game, marquee, small_button_pin, large_button_pin))
     await asyncio.gather(setup_task)
 
-    print("Starting game", game)
+    pixels.fill(0)
+    pixels.show()
     marquee.message("RDY ", 0, False)
 
     time.sleep(0.5)
@@ -252,8 +276,7 @@ async def main():
     show_timer_task = asyncio.create_task(show_timer())
 
     await asyncio.gather(buttons_task, timer_task, show_timer_task)
-
-    print("End of program, this should never be reached")
+    # We never get here
 
 game = Game()
 asyncio.run(main())
