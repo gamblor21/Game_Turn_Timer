@@ -306,7 +306,7 @@ async def monitor_buttons(game, marquee):
                     small_button_light.value = True
                     if (
                         key_event.timestamp - small_button_press_time
-                    ) > 5000:  # 5 seconds
+                    ) > 4000:  # 4 seconds
                         if game.game_over is False:
                             game.game_over = True
                             game.pause()
